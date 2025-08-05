@@ -109,10 +109,7 @@ class QAModel:
         if not context_docs:
             return "متاسفانه پاسخ مشخصی برای سوال شما در پایگاه دانش ما وجود ندارد."
 
-        context_text = "\n\n---\n\n".join([
-            f"سوال: {item['question']}\nپاسخ: {item['answer']}"
-            for item in context_docs
-        ])
+        context_text = "\n\n---\n\n".join([f"سوال یافت شده: {item['question']}\nپاسخ مرتبط: {item['answer']}" for item in context_docs])
 
         try:
             response = self._openai_client.chat.completions.create(
@@ -120,7 +117,11 @@ class QAModel:
                 messages=[
                     {
                         "role": "system",
-                        "content": "شما یک کارشناس پشتیبانی حرفه‌ای و دقیق هستید. با توجه به اطلاعات زیر، به سوال کاربر به طور کامل و خلاصه پاسخ بده."
+                        "content": """شما یک کارشناس پشتیبانی هستید که وظیفه شما پاسخ دادن به سوال کاربر **فقط و فقط** بر اساس اطلاعات ارائه شده است.
+- به هیچ عنوان از دانش عمومی خود استفاده نکن.
+- اگر پاسخ سوال در "اطلاعات مرتبط" موجود نیست، باید **دقیقاً** و بدون هیچ کلمه اضافه‌ای، عبارت "پاسخ یافت نشد" را برگردانی.
+- پاسخ باید بر اساس اطلاعات داده شده، دقیق و خلاصه باشد."""
+
                     },
                     {
                         "role": "user",
@@ -136,6 +137,8 @@ class QAModel:
             # print("--- END DEBUG ---")
             choice = response.choices[0]
             content = getattr(choice.message, 'content', '') if choice.message else ''
+            if "پاسخ یافت نشد" in content:
+                return "متاسفانه پاسخ مشخصی برای سوال شما در پایگاه دانش ما وجود ندارد."
             return content.strip()
 
 
