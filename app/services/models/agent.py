@@ -3,12 +3,13 @@
 import json
 import numpy as np
 import requests
+import traceback
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from app.core.config import settings
 from app.services.tools.tools import operator_tool  # <-- وارد کردن ابزار جدید
 import threading  # <-- برای جلوگیری از تداخل در زمان نوشتن فایل
-
+from openai import OpenAI
 
 class QAModel:
     """
@@ -19,12 +20,18 @@ class QAModel:
         self._knowledge_base = None
         self._all_doc_vectors = None
         self._embedder = None
+        self._openai_client = None
         self._file_lock = threading.Lock()  # <-- قفل برای جلوگیری از تداخل در دسترسی به فایل
         self._load_dependencies()
 
     def _load_dependencies(self):
         print("Service: در حال بارگذاری مدل امبدینگ...")
         self._embedder = SentenceTransformer(settings.EMBEDDING_MODEL)
+        print("Service: در حال مقداردهی اولیه کلاینت OpenAI...")
+        self._openai_client = OpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
+        )
         self._reload_knowledge_base()
 
     def _reload_knowledge_base(self):
@@ -52,38 +59,97 @@ class QAModel:
     # --- متدهای مربوط به تسک ۱ و ۲ (تغییرات جزئی برای استفاده از متدهای جدید) ---
 
     def _generate_tags(self, user_query: str) -> list:
-        # (این بخش بدون تغییر باقی می‌ماند)
-        url = "https://api.together.xyz/v1/chat/completions";
-        headers = {"Authorization": f"Bearer {settings.TOGETHER_API_KEY}"};
-        payload = {"model": settings.LLM_MODEL, "messages": [{"role": "system",
-                                                              "content": f"شما یک سیستم طبقه‌بندی دقیق هستید... تگ‌های مجاز: {json.dumps(settings.SUPPORT_TAGS, ensure_ascii=False)}"},
-                                                             {"role": "user", "content": f"سوال: \"{user_query}\""}],
-                   "temperature": 0.0, "max_tokens": 100, "response_format": {"type": "json_object"}};
+        """با استفاده از API OpenAI برای سوال کاربر تگ تولید میکند."""
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20);
-            response.raise_for_status();
-            tags = json.loads(response.json()["choices"][0]["message"]["content"]);
-            return tags if isinstance(tags, list) else []
-        except Exception as e:
-            print(f"[خطای تگ‌گذاری]: {e}"); return []
+            response = self._openai_client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"""شما یک سیستم طبقهبندی دقیق هستید. یک  تگ مرتبط را از لیست زیر انتخاب کن. فقط و فقط یک آرایه JSON معتبر در خروجی برگردان. لیست تگهای مجاز: {json.dumps(settings.SUPPORT_TAGS, ensure_ascii=False)}"""
+                    },
+                    {
+                        "role": "user",
+                        "content": f"سوال: \"{user_query}\""
+                    }
+                ],
+                temperature=0.0,
+                max_tokens=100
+            )
+            # print("--- DEBUG RESPONSE ---")
+            # print(f"نوع متغیر response: {type(response)}")
+            # print(f"محتوای متغیر response: {response}")
+            # print("--- END DEBUG ---")
+            content = response.choices[0].message.content if response.choices and response.choices[0].message else ""
+            tags = json.loads(content)
+
+            if isinstance(tags, list):
+                return tags
+            elif isinstance(tags, dict) and "tags" in tags:
+                return tags["tags"]
+            else:
+                return []
+
+
+        except Exception :
+
+            print(f"[OpenAI Tagging Error]: یک خطای غیرمنتظره رخ داد.")
+
+            print("--- ردیابی کامل خطا (Traceback) ---")
+
+            traceback.print_exc()
+
+            print("---------------------------------")
+
+            return []
 
     def _generate_response(self, user_query: str, context_docs: list) -> str:
-        # (این بخش بدون تغییر باقی می‌ماند)
-        if not context_docs: return "متاسفانه پاسخ مشخصی برای سوال شما در پایگاه دانش ما وجود ندارد."; context_text = "\n\n---\n\n".join(
-            [f"سوال: {item['question']}\nپاسخ: {item['answer']}" for item in
-             context_docs]); url = "https://api.together.xyz/v1/chat/completions"; headers = {
-            "Authorization": f"Bearer {settings.TOGETHER_API_KEY}"}; payload = {"model": settings.LLM_MODEL,
-                                                                                "messages": [{"role": "system",
-                                                                                              "content": "شما یک کارشناس پشتیبانی حرفه‌ای هستید..."},
-                                                                                             {"role": "user",
-                                                                                              "content": f"## اطلاعات مرتبط:\n{context_text}\n\n## سوال کاربر:\n\"{user_query}\""}],
-                                                                                "temperature": 0.2, "max_tokens": 500};
+        """با توجه به اسناد بازیابی شده و با استفاده از API OpenAI، پاسخ نهایی را تولید میکند."""
+
+        if not context_docs:
+            return "متاسفانه پاسخ مشخصی برای سوال شما در پایگاه دانش ما وجود ندارد."
+
+        context_text = "\n\n---\n\n".join([
+            f"سوال: {item['question']}\nپاسخ: {item['answer']}"
+            for item in context_docs
+        ])
+
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=40);
-            response.raise_for_status();
-            return response.json()["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            print(f"[خطا در تولید پاسخ]: {e}"); return "متاسفانه در ارتباط با مدل هوش مصنوعی مشکلی پیش آمده است."
+            response = self._openai_client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "شما یک کارشناس پشتیبانی حرفه‌ای و دقیق هستید. با توجه به اطلاعات زیر، به سوال کاربر به طور کامل و خلاصه پاسخ بده."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"## اطلاعات مرتبط:\n{context_text}\n\n## سوال کاربر:\n\"{user_query}\""
+                    }
+                ],
+                temperature=0.0,
+                max_tokens=200
+             )
+            # print("--- DEBUG TAGS ---")
+            # print(f"نوع متغیر response: {type(response)}")
+            # print(f"محتوای متغیر response: {response}")
+            # print("--- END DEBUG ---")
+            choice = response.choices[0]
+            content = getattr(choice.message, 'content', '') if choice.message else ''
+            return content.strip()
+
+
+        except Exception:
+
+            print(f"[OpenAI Response Gen Error]: یک خطای غیرمنتظره رخ داد.")
+
+            print("--- ردیابی کامل خطا (Traceback) ---")
+
+            traceback.print_exc()
+
+            print("---------------------------------")
+
+            return "متاسفانه در ارتباط با سرویس OpenAI مشکلی پیش آمده است."
 
     def predict(self, user_query: str) -> dict:
         """
@@ -91,7 +157,7 @@ class QAModel:
         """
         # اگر هیچ داده‌ای در پایگاه دانش وجود ندارد، مستقیم به اپراتور بفرست
         if len(self._knowledge_base) == 0:
-            operator_tool.send_to_operator(user_query)
+            operator_tool(user_query)
             return {"tags_identified": [],
                     "final_answer": "متاسفانه پایگاه دانش خالی است. سوال شما برای بررسی توسط اپراتور ارسال شد.",
                     "retrieved_context_count": 0}
@@ -110,7 +176,7 @@ class QAModel:
         # === بخش جدید برای تسک ۴: حلقه بازخورد با اپراتور ===
         # اگر هیچ داکیومنتی پیدا نشد یا پاسخ تولید شده حاوی پیام پیش‌فرض "ندانستن" بود
         if not top_matches or "متاسفانه پاسخ مشخصی" in answer:
-            operator_tool.send_to_operator(user_query)
+            operator_tool(user_query)
 
         return {"tags_identified": tags, "final_answer": answer, "retrieved_context_count": len(top_matches)}
 

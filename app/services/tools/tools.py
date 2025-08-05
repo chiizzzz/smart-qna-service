@@ -1,6 +1,6 @@
 # مسیر فایل: app/services/operator_tool.py
 
-def send_to_operator(question: str):
+def operator_tool(question: str):
     """
     این تابع مسئول ارسال یک سوال بی‌پاسخ به سیستم یا اپراتور انسانی است.
 

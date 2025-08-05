@@ -65,7 +65,6 @@ def delete_entries(payload: DeleteRequest = None, model: QAModel = Depends(get_m
 def add_from_operator(payload: OperatorAnswerPayload, model: QAModel = Depends(get_model)):
     """
     اندپوینتی برای اینکه اپراتور پاسخ یک سوال بی‌پاسخ را به سیستم اضافه کند.
-    (مربوط به تسک ۴)
     """
     # ما از همان متد add_entries استفاده می‌کنیم و فقط یک آیتم به آن می‌دهیم
     result = model.add_entries([payload.dict()])
