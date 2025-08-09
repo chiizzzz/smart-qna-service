@@ -26,8 +26,8 @@ def ping():
 
 
 # هنگام شروع برنامه، همه route ها رو چاپ کن
-# @app.on_event("startup")
-# async def show_all_routes():
-#     print("\n📍 [ROUTES] مسیرهای فعال FastAPI:")
-#     for route in app.router.routes:
-#         print(f"🔗 {route.path} → {route.name}")
+@app.on_event("startup")
+async def show_all_routes():
+    print("\n📍 [ROUTES] مسیرهای فعال FastAPI:")
+    for route in app.router.routes:
+        print(f"🔗 {route.path} → {route.name}")

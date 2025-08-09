@@ -1,6 +1,8 @@
 # مسیر فایل: app/services/models.py
 
 import json
+import os
+
 import numpy as np
 import requests
 import traceback
@@ -42,13 +44,20 @@ class QAModel:
                 with open(settings.VECTOR_STORE_PATH, "r", encoding="utf-8") as f:
                     self._knowledge_base = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):
-                self._knowledge_base = []  # اگر فایل وجود نداشت یا خالی بود
+                # self._knowledge_base = []  # اگر فایل وجود نداشت یا خالی بود
+                print("shit------------------------------------*")
 
         if self._knowledge_base:
             self._all_doc_vectors = np.array([item["embedding"] for item in self._knowledge_base])
         else:
             self._all_doc_vectors = np.array([])
-        print(f"Service: بارگذاری کامل شد. تعداد آیتم‌ها: {len(self._knowledge_base)}")
+        print(f"Service: items: {len(self._knowledge_base)}")
+        print("VECTOR_STORE_PATH:", settings.VECTOR_STORE_PATH)
+        print("File exists:", os.path.exists(settings.VECTOR_STORE_PATH))
+        if os.path.exists(settings.VECTOR_STORE_PATH):
+            with open(settings.VECTOR_STORE_PATH, "r", encoding="utf-8") as f:
+                raw = f.read()
+            print("Raw file length:", len(raw))
 
     def _save_knowledge_base(self):
         """تغییرات را در فایل vector_store.json ذخیره می‌کند."""
@@ -110,6 +119,8 @@ class QAModel:
             return "متاسفانه پاسخ مشخصی برای سوال شما در پایگاه دانش ما وجود ندارد."
 
         context_text = "\n\n---\n\n".join([f"سوال یافت شده: {item['question']}\nپاسخ مرتبط: {item['answer']}" for item in context_docs])
+        print("=== DEBUG CONTEXT ===")
+        print(context_text)
 
         try:
             response = self._openai_client.chat.completions.create(
@@ -117,11 +128,12 @@ class QAModel:
                 messages=[
                     {
                         "role": "system",
-                        "content": """شما یک کارشناس پشتیبانی هستید که وظیفه شما پاسخ دادن به سوال کاربر **فقط و فقط** بر اساس اطلاعات ارائه شده است.
-- به هیچ عنوان از دانش عمومی خود استفاده نکن.
-- اگر پاسخ سوال در "اطلاعات مرتبط" موجود نیست، باید **دقیقاً** و بدون هیچ کلمه اضافه‌ای، عبارت "پاسخ یافت نشد" را برگردانی.
-- پاسخ باید بر اساس اطلاعات داده شده، دقیق و خلاصه باشد."""
-
+                        # --- این بخش را تغییر دهید ---
+                        "content": """شما یک دستیار هوشمند هستید که وظیفه شما استخراج پاسخ از متن ارائه شده است.
+        - به سوال کاربر با استفاده از اطلاعات موجود در بخش "پاسخ مرتبط" جواب بده.
+        - پاسخ باید خلاصه و مستقیم باشد.
+        - اگر پاسخ سوال در اطلاعات مرتبط وجود نداشت، فقط عبارت "پاسخ یافت نشد" را برگردان."""
+                        # --- پایان بخش تغییر یافته ---
                     },
                     {
                         "role": "user",
@@ -130,7 +142,7 @@ class QAModel:
                 ],
                 temperature=0.0,
                 max_tokens=200
-             )
+            )
             #to do
             # crt output
             # print("--- DEBUG TAGS ---")
@@ -161,6 +173,8 @@ class QAModel:
         نقطه ورود برای اندپوینت اصلی /qna. (با منطق جدید برای تسک ۴)
         """
         # اگر هیچ داده‌ای در پایگاه دانش وجود ندارد، مستقیم به اپراتور بفرست
+        print("DEBUG before prediction, KB length:", len(self._knowledge_base))
+
         if len(self._knowledge_base) == 0:
             operator_tool(user_query)
             return {"tags_identified": [],

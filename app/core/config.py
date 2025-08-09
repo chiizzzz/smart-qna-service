@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
     TOGETHER_API_KEY: str
     LLM_MODEL: str = "meta-llama/Llama-3-70b-chat-hf_free"
-    EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     VECTOR_STORE_PATH: str = "vector_store.json"
     LANGFUSE_PUBLIC_KEY: str ="pk-lf-0c3b9ad9-3dee-4103-ae21-16c06cd1812f"
     LANGFUSE_SECRET_KEY: str ="sk-lf-8d21983d-ff0d-4151-b9c0-98e97c978cc9"
