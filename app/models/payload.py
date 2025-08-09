@@ -3,11 +3,9 @@
 from pydantic import BaseModel
 from typing import List, Optional
 
-# --- این بخش برای تسک ۱ و ۲ است (بدون تغییر) ---
 class QARequest(BaseModel):
     query: str
 
-# --- این بخش جدید برای تسک ۳ و ۴ است ---
 
 class SingleQA(BaseModel):
     """مدلی برای یک جفت پرسش و پاسخ."""

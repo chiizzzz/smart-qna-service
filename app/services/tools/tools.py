@@ -1,4 +1,3 @@
-# مسیر فایل: app/services/operator_tool.py
 
 def operator_tool(question: str):
     """

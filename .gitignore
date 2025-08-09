@@ -1,3 +1,5 @@
+New folder
+
 
 .venv/
 venv/
@@ -12,7 +14,7 @@ __pycache__/
 *.sqlite3
 
 .env
-
+test.py
 vector_store.json
 output_tagged_llama.xlsx
 input.xlsx

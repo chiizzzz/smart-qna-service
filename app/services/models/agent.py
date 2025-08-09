@@ -131,6 +131,8 @@ class QAModel:
                 temperature=0.0,
                 max_tokens=200
              )
+            #to do
+            # crt output
             # print("--- DEBUG TAGS ---")
             # print(f"نوع متغیر response: {type(response)}")
             # print(f"محتوای متغیر response: {response}")
