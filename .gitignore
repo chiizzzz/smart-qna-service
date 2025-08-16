@@ -5,6 +5,8 @@ New folder
 venv/
 env/
 
+.env
+
 __pycache__/
 *.py[cod]
 *$py.class
@@ -13,7 +15,9 @@ __pycache__/
 *.db
 *.sqlite3
 
-.env
+client.py
+vector_store.json
+
 test.py
 vector_store.json
 output_tagged_llama.xlsx
