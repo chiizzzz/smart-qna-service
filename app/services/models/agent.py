@@ -312,6 +312,8 @@ class QAModel:
             if ids_to_delete is None:
                 count = self._reset_collection()
                 return {"status": "success", "message": f"کل پایگاه دانش ({count} آیتم) پاک شد."}
+            if not ids_to_delete:
+                return {"status": "noop", "message": "No items to delete."}
 
             self._collection.delete(ids=ids_to_delete)
         return {"status": "success", "message": f"{len(ids_to_delete)} آیتم حذف شدند."}
