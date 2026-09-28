@@ -1,5 +1,9 @@
-from typing import Union
-from fastapi import APIRouter, Depends, status, BackgroundTasks
+import secrets
+from typing import Optional, Union
+from fastapi import APIRouter, Depends, status, BackgroundTasks, Header, HTTPException
+
+from app.core.config import settings
+from app.services.tools import tools
 
 from app.services.models.agent import get_model, QAModel
 from app.schemas import (
@@ -44,10 +48,21 @@ def post_qna(
 def post_feedback(
     payload: FeedbackRequest, model: QAModel = Depends(get_model)
 ) -> FeedbackResponse:
-    result = model.handle_user_feedback(payload.dict())
+    result = model.handle_user_feedback(payload.model_dump())
     return FeedbackResponse(**result)
 
-admin_router = APIRouter()
+def require_admin(x_admin_token: Optional[str] = Header(default=None)):
+    """مسیرهای ادمین فقط با هدر X-Admin-Token معتبر قابل دسترسی هستند."""
+    if not settings.ADMIN_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ADMIN_API_KEY تنظیم نشده است؛ مسیرهای ادمین غیرفعال هستند.",
+        )
+    if not x_admin_token or not secrets.compare_digest(x_admin_token, settings.ADMIN_API_KEY):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="توکن ادمین نامعتبر است.")
+
+
+admin_router = APIRouter(dependencies=[Depends(require_admin)])
 
 @admin_router.post(
     "/knowledge_base/add",
@@ -56,7 +71,7 @@ admin_router = APIRouter()
     summary="افزودن دسته‌ای پرسش و پاسخ",
 )
 def add_entries(payload: QAList, model: QAModel = Depends(get_model)):
-    return model.add_entries(payload.dict()["data"])
+    return model.add_entries(payload.model_dump()["data"])
 
 
 @admin_router.put(
@@ -66,7 +81,7 @@ def add_entries(payload: QAList, model: QAModel = Depends(get_model)):
     summary="بازنویسی کامل پایگاه دانش",
 )
 def overwrite_database(payload: QAList, model: QAModel = Depends(get_model)):
-    return model.overwrite_database(payload.dict()["data"])
+    return model.overwrite_database(payload.model_dump()["data"])
 
 
 @admin_router.delete(
@@ -75,7 +90,7 @@ def overwrite_database(payload: QAList, model: QAModel = Depends(get_model)):
     name="kb:delete_entries",
     summary="حذف آیتم‌ها از پایگاه دانش",
 )
-def delete_entries(payload: DeleteRequest = None, model: QAModel = Depends(get_model)):
+def delete_entries(payload: Optional[DeleteRequest] = None, model: QAModel = Depends(get_model)):
     ids = payload.ids if payload else None
     return model.delete_entries(ids)
 
@@ -87,7 +102,7 @@ def delete_entries(payload: DeleteRequest = None, model: QAModel = Depends(get_m
     summary="افزودن یک پرسش و پاسخ توسط اپراتور",
 )
 def add_from_operator(payload: OperatorAnswerPayload, model: QAModel = Depends(get_model)):
-    return model.add_entries([payload.dict()])
+    return model.add_entries([payload.model_dump()])
 
 
 @admin_router.get(
@@ -110,9 +125,7 @@ def get_all_entries(model: QAModel = Depends(get_model)):
     summary="مشاهده لیست تیکت‌های در انتظار پاسخ",
 )
 def get_pending_tickets():
-    from app.services.tools.tools import _read_db
-    tickets_dict = _read_db()
-    return PendingTicketList(data=list(tickets_dict.values()))
+    return PendingTicketList(data=tools.list_tickets())
 
 
 @admin_router.post(
@@ -126,7 +139,9 @@ def respond_to_ticket(
     background_tasks: BackgroundTasks,
     model: QAModel = Depends(get_model),
 ):
-    background_tasks.add_task(model.handle_admin_response, payload.dict())
+    if not tools.get_ticket(payload.question_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="تیکتی با این شناسه یافت نشد.")
+    background_tasks.add_task(model.handle_admin_response, payload.model_dump())
     return {"message": "پاسخ شما ثبت شد و پردازش آن در پس‌زمینه انجام می‌شود."}
 
 

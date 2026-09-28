@@ -1,28 +1,36 @@
-from pydantic_settings import BaseSettings
-from typing import List
-class Server(BaseSettings):
-    HOST: str = "0.0.0.0"
-    PORT: int = 8000
-class Database(BaseSettings):
-    URL: str = ""
-    NAME: str = ""
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List, Optional
+
+
 class Settings(BaseSettings):
-    SERVER: Server = Server()
-    DATABASE: Database = Database()
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     API_PREFIX: str = "/api/v1"
-    TOGETHER_API_KEY: str
-    LLM_MODEL: str = "meta-llama/Llama-3-70b-chat-hf_free"
-    EMBEDDING_MODEL: str = "intfloat/multilingual-e5-large"
-    VECTOR_STORE_PATH: str = "vector_store.json"
-    LANGFUSE_PUBLIC_KEY: str ="pk-lf-0c3b9ad9-3dee-4103-ae21-16c06cd1812f"
-    LANGFUSE_SECRET_KEY: str ="sk-lf-8d21983d-ff0d-4151-b9c0-98e97c978cc9"
+
+    # --- مدل زبانی (هر API سازگار با OpenAI) ---
     OPENAI_API_KEY: str
-    OPENAI_BASE_URL:str
+    OPENAI_BASE_URL: Optional[str] = None
     LLM_MODEL: str = "gpt-4o"
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-    SIMILARITY_THRESHOLD: float = 0.5
+    LLM_MAX_TOKENS: int = 512
+
+    # --- امبدینگ و پایگاه دانش ---
+    EMBEDDING_MODEL: str = "intfloat/multilingual-e5-large"
+    CHROMA_DB_PATH: str = "./chroma_db_store"
+    # شباهت کسینوسی (بین -1 و 1). مقدار 0.75 معادل آستانه 0.5 قبلی روی فاصله L2 است.
+    SIMILARITY_THRESHOLD: float = 0.75
+    TOP_K: int = 3
+
+    # --- کش پاسخ‌ها برای حلقه بازخورد ---
+    CACHE_MAX_SIZE: int = 1000
+
+    # --- امنیت مسیرهای ادمین ---
+    # اگر خالی باشد، تمام مسیرهای ادمین غیرفعال (503) هستند.
+    ADMIN_API_KEY: Optional[str] = None
+
+    # --- Langfuse (اختیاری؛ فقط از طریق .env مقداردهی شود) ---
+    LANGFUSE_PUBLIC_KEY: Optional[str] = None
+    LANGFUSE_SECRET_KEY: Optional[str] = None
+
     SUPPORT_TAGS: List[str] = [
         "پشتیبانی فنی",
         "فروش و قیمت‌گذاری",
@@ -32,4 +40,6 @@ class Settings(BaseSettings):
         "پیشنهادات و انتقادات",
         "همکاری تجاری"
     ]
+
+
 settings = Settings()

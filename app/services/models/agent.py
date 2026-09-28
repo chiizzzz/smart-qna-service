@@ -1,32 +1,38 @@
-# مسیر فایل: app/services/models.py
+# مسیر فایل: app/services/models/agent.py
 import uuid
 import json
-import os
-import chromadb
-import numpy as np
-import requests
+import threading
 import traceback
+from collections import OrderedDict
+
+import chromadb
 from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-from app.core.config import settings
-from app.services.tools import tools  # <-- وارد کردن ابزار جدید
-import threading  # <-- برای جلوگیری از تداخل در زمان نوشتن فایل
 from openai import OpenAI
+
+from app.core.config import settings
+from app.services.tools import tools
+
+NOT_FOUND_MESSAGE = "متاسفانه پاسخ مشخصی برای سوال شما در پایگاه دانش ما وجود ندارد."
+
 
 class QAModel:
     """
     این کلاس، کل RAG سیستم به همراه منطق مدیریت پایگاه دانش و حلقه بازخورد را پیاده‌سازی می‌کند.
     """
 
+    COLLECTION_NAME = "knowledge_base_main"  # نام ثابت برای کالکشن
+
     def __init__(self):
-        self.COLLECTION_NAME = "knowledge_base_main"  # نام ثابت برای کالکشن
         self._embedder = None
         self._openai_client = None
         self._chroma_client = None
         self._collection = None
+        # قفل برای عملیات نوشتن روی کالکشن (ساخت ID جدید و بازسازی کالکشن)
+        self._kb_lock = threading.RLock()
+        # کش پاسخ‌ها برای حلقه بازخورد (LRU با سقف مشخص)
+        self._response_cache = OrderedDict()
+        self._cache_lock = threading.Lock()
         self._load_dependencies()
-        self._response_cache = {}
-        self.CACHE_MAX_SIZE = 1000
 
     def _load_dependencies(self):
         """تمام نیازمندی‌های سنگین را فقط یک بار در زمان شروع برنامه بارگذاری می‌کند."""
@@ -41,41 +47,30 @@ class QAModel:
 
         print("Service: در حال مقداردهی اولیه کلاینت ChromaDB...")
         # از PersistentClient برای ذخیره داده‌ها روی دیسک استفاده می‌کنیم
-        self._chroma_client = chromadb.PersistentClient(path="./chroma_db_store")
-        self._collection = self._chroma_client.get_or_create_collection(name=self.COLLECTION_NAME)
+        self._chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_PATH)
+        self._collection = self._get_or_create_collection()
 
         print(f"Service: ChromaDB collection '{self.COLLECTION_NAME}' loaded. Total items: {self._collection.count()}")
 
-    def _reload_knowledge_base(self):
-        """پایگاه دانش را از فایل می‌خواند. این تابع باید هربار پس از تغییر فایل فراخوانی شود."""
-        with self._file_lock:
-            print("Service: در حال بارگذاری/بارگذاری مجدد پایگاه دانش برداری...")
-            try:
-                with open(settings.VECTOR_STORE_PATH, "r", encoding="utf-8") as f:
-                    self._knowledge_base = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                # self._knowledge_base = []  # اگر فایل وجود نداشت یا خالی بود
-                print("shit------------------------------------*")
+    def _get_or_create_collection(self):
+        # کالکشن‌های جدید با فاصله کسینوسی ساخته می‌شوند؛ کالکشن‌های قدیمی فضای فعلی خود را حفظ می‌کنند.
+        return self._chroma_client.get_or_create_collection(
+            name=self.COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
 
-        if self._knowledge_base:
-            self._all_doc_vectors = np.array([item["embedding"] for item in self._knowledge_base])
-        else:
-            self._all_doc_vectors = np.array([])
-        print(f"Service: items: {len(self._knowledge_base)}")
-        print("VECTOR_STORE_PATH:", settings.VECTOR_STORE_PATH)
-        print("File exists:", os.path.exists(settings.VECTOR_STORE_PATH))
-        if os.path.exists(settings.VECTOR_STORE_PATH):
-            with open(settings.VECTOR_STORE_PATH, "r", encoding="utf-8") as f:
-                raw = f.read()
-            print("Raw file length:", len(raw))
+    def _embed(self, text: str) -> list:
+        return self._embedder.encode(text, normalize_embeddings=True).tolist()
 
-    def _save_knowledge_base(self):
-        """تغییرات را در فایل vector_store.json ذخیره می‌کند."""
-        with self._file_lock:
-            with open(settings.VECTOR_STORE_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._knowledge_base, f, ensure_ascii=False, indent=2)
-
-    # --- متدهای مربوط به تسک ۱ و ۲ (تغییرات جزئی برای استفاده از متدهای جدید) ---
+    def _distance_to_similarity(self, distance: float) -> float:
+        """فاصله برگشتی ChromaDB را به شباهت کسینوسی تبدیل می‌کند."""
+        space = (self._collection.metadata or {}).get("hnsw:space", "l2")
+        if space == "l2":
+            # برای بردارهای نرمال‌شده: فاصله L2 مربعی = 2 - 2cos
+            return 1 - distance / 2
+        if space == "ip":
+            return 1 - distance
+        return 1 - distance  # cosine
 
     def _generate_tags(self, user_query: str) -> list:
         """با استفاده از API OpenAI برای سوال کاربر تگ تولید میکند."""
@@ -95,42 +90,32 @@ class QAModel:
                 temperature=0.0,
                 max_tokens=100
             )
-            # print("--- DEBUG RESPONSE ---")
-            # print(f"نوع متغیر response: {type(response)}")
-            # print(f"محتوای متغیر response: {response}")
-            # print("--- END DEBUG ---")
             content = response.choices[0].message.content if response.choices and response.choices[0].message else ""
+            content = (content or "").strip()
+            # حذف ```json ... ``` در صورت وجود
+            if content.startswith("```"):
+                content = content.strip("`").removeprefix("json").strip()
             tags = json.loads(content)
 
-            if isinstance(tags, list):
-                return tags
-            elif isinstance(tags, dict) and "tags" in tags:
-                return tags["tags"]
-            else:
+            if isinstance(tags, dict):
+                tags = tags.get("tags", [])
+            if not isinstance(tags, list):
                 return []
+            # فقط تگ‌های مجاز را نگه دار
+            return [tag for tag in tags if tag in settings.SUPPORT_TAGS]
 
-
-        except Exception :
-
-            print(f"[OpenAI Tagging Error]: یک خطای غیرمنتظره رخ داد.")
-
-            print("--- ردیابی کامل خطا (Traceback) ---")
-
+        except Exception:
+            print("[OpenAI Tagging Error]: یک خطای غیرمنتظره رخ داد.")
             traceback.print_exc()
-
-            print("---------------------------------")
-
             return []
 
     def _generate_response(self, user_query: str, context_docs: list) -> str:
         """با توجه به اسناد بازیابی شده و با استفاده از API OpenAI، پاسخ نهایی را تولید میکند."""
 
         if not context_docs:
-            return "متاسفانه پاسخ مشخصی برای سوال شما در پایگاه دانش ما وجود ندارد."
+            return NOT_FOUND_MESSAGE
 
         context_text = "\n\n---\n\n".join([f"سوال یافت شده: {item['question']}\nپاسخ مرتبط: {item['answer']}" for item in context_docs])
-        print("=== DEBUG CONTEXT ===")
-        print(context_text)
 
         try:
             response = self._openai_client.chat.completions.create(
@@ -154,50 +139,18 @@ class QAModel:
                 ],
                 temperature=0.5,
                 top_p=0.9,
-                max_tokens=100
-             )
-            #to do
-            # crt output
-            # print("--- DEBUG TAGS ---")
-            # print(f"نوع متغیر response: {type(response)}")
-            # print(f"محتوای متغیر response: {response}")
-            # print("--- END DEBUG ---")
+                max_tokens=settings.LLM_MAX_TOKENS
+            )
             choice = response.choices[0]
-            content = getattr(choice.message, 'content', '') if choice.message else ''
+            content = (getattr(choice.message, 'content', '') if choice.message else '') or ''
             if "پاسخ یافت نشد" in content:
-                return "متاسفانه پاسخ مشخصی برای سوال شما در پایگاه دانش ما وجود ندارد."
+                return NOT_FOUND_MESSAGE
             return content.strip()
 
-
         except Exception:
-
-            print(f"[OpenAI Response Gen Error]: یک خطای غیرمنتظره رخ داد.")
-
-            print("--- ردیابی کامل خطا (Traceback) ---")
-
+            print("[OpenAI Response Gen Error]: یک خطای غیرمنتظره رخ داد.")
             traceback.print_exc()
-
-            print("---------------------------------")
-
             return "متاسفانه در ارتباط با سرویس OpenAI مشکلی پیش آمده است."
-
-    def _load_dependencies(self):
-        """تمام نیازمندی‌های سنگین را فقط یک بار در زمان شروع برنامه بارگذاری می‌کند."""
-        print("Service: در حال بارگذاری مدل امبدینگ...")
-        self._embedder = SentenceTransformer(settings.EMBEDDING_MODEL)
-
-        print("Service: در حال مقداردهی اولیه کلاینت OpenAI...")
-        self._openai_client = OpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL,
-        )
-
-        print("Service: در حال مقداردهی اولیه کلاینت ChromaDB...")
-        # از PersistentClient برای ذخیره داده‌ها روی دیسک استفاده می‌کنیم
-        self._chroma_client = chromadb.PersistentClient(path="./chroma_db_store")
-        self._collection = self._chroma_client.get_or_create_collection(name=self.COLLECTION_NAME)
-
-        print(f"Service: ChromaDB collection '{self.COLLECTION_NAME}' loaded. Total items: {self._collection.count()}")
 
     def predict(self, user_query: str) -> dict:
         if self._collection.count() == 0:
@@ -209,14 +162,15 @@ class QAModel:
             }
 
         results = self._collection.query(
-            query_embeddings=[self._embedder.encode(user_query).tolist()],
-            n_results=3
+            query_embeddings=[self._embed(user_query)],
+            n_results=settings.TOP_K,
+            include=["metadatas", "distances"],
         )
 
         top_matches = []
-        if results and results['ids'][0]:
+        if results and results['ids'] and results['ids'][0]:
             for i, distance in enumerate(results['distances'][0]):
-                similarity = 1 - distance
+                similarity = self._distance_to_similarity(distance)
                 if similarity >= settings.SIMILARITY_THRESHOLD:
                     metadata = results['metadatas'][0][i]
                     top_matches.append({
@@ -252,43 +206,41 @@ class QAModel:
         session_id = feedback_payload['session_id']
         is_correct = feedback_payload['is_correct']
 
-        cached_response = self._response_cache.get(session_id)
+        cached_response = self._pop_from_cache(session_id)
 
         if not cached_response:
             return {"status": "error", "message": "شناسه جلسه نامعتبر است یا منقضی شده است."}
 
-        if not is_correct:
-            question = cached_response['original_question']
-            incorrect_answer = cached_response['final_answer']
+        question = cached_response['original_question']
+        answer = cached_response['final_answer']
 
+        if not is_correct:
             tools.create_ticket(
                 question=question,
-                bot_answer=incorrect_answer,
+                bot_answer=answer,
                 source="negative_feedback"
             )
-
-            del self._response_cache[session_id]
-
             return {
                 "status": "feedback_received",
                 "message": "بازخورد شما ثبت شد. سوال برای بررسی توسط کارشناسان ما ارسال گردید."
             }
 
-        question = cached_response['original_question']
-        answer = cached_response['final_answer']
-
         print(f"INFO: بازخورد مثبت دریافت شد. در حال افزودن به پایگاه دانش: Q: '{question}'")
-
         self.add_entries([{"question": question, "answer": answer}])
-
-        del self._response_cache[session_id]
 
         return {"status": "added_to_kb", "message": "متشکریم! پاسخ شما به بهبود دانش سیستم ما کمک کرد."}
 
     def _add_to_cache(self, session_id: str, response_data: dict):
+        with self._cache_lock:
+            self._response_cache[session_id] = response_data
+            self._response_cache.move_to_end(session_id)
+            while len(self._response_cache) > settings.CACHE_MAX_SIZE:
+                self._response_cache.popitem(last=False)
 
-        self._response_cache[session_id] = response_data
-
+    def _pop_from_cache(self, session_id: str):
+        # pop اتمی است تا یک session_id فقط یک بار بازخورد بگیرد
+        with self._cache_lock:
+            return self._response_cache.pop(session_id, None)
 
     def handle_admin_response(self, payload: dict):
         """منطق اصلی پردازش پاسخ ادمین."""
@@ -305,8 +257,8 @@ class QAModel:
 
         # 2. (شبیه‌سازی) پاسخ را مستقیماً برای کاربر ارسال کن
         print("=" * 50)
-        print(f"SIMULATING: ارسال مستقیم پاسخ برای تیکت اصلی.")
-        print(f"  > Ticket/User ID: {ticket.get('user_id', 'N/A')}")  # اگر user_id داشتید
+        print("SIMULATING: ارسال مستقیم پاسخ برای تیکت اصلی.")
+        print(f"  > Ticket/User ID: {ticket.get('user_id', 'N/A')}")
         print(f"  > Original Question: {original_question}")
         print(f"  > Admin's Answer: {admin_answer}")
         print("=" * 50)
@@ -319,76 +271,56 @@ class QAModel:
         # 4. تیکت را از لیست انتظار حذف کن
         tools.close_ticket(question_id)
 
-
-    def _create_new_entry(self, qa_pair: dict) -> dict:
-        """یک آیتم جدید با امبدینگ و ID ایجاد می‌کند."""
-        text_to_embed = f"سوال: {qa_pair['question']}\n\nپاسخ: {qa_pair['answer']}"
-        embedding = self._embedder.encode(text_to_embed, convert_to_numpy=True).tolist()
-
-        # پیدا کردن بزرگترین ID عددی موجود برای ساخت ID جدید
-        max_id = 0
-        if self._knowledge_base:
-            for item in self._knowledge_base:
-                if item['id'].startswith('qna-'):
-                    try:
-                        num = int(item['id'].split('-')[1])
-                        if num > max_id:
-                            max_id = num
-                    except (ValueError, IndexError):
-                        continue
-
-        return {
-            "id": f"qna-{max_id + 1}",
-            "question": qa_pair['question'],
-            "answer": qa_pair['answer'],
-            "embedding": embedding,
-            "tags": []  # تگ‌ها می‌توانند بعدا اضافه شوند
-        }
-
     def add_entries(self, qa_list: list) -> dict:
         """لیستی از پرسش و پاسخ‌ها را به ChromaDB اضافه می‌کند."""
         if not qa_list:
             return {"status": "noop", "message": "No items to add."}
 
-        ids, documents, metadatas, embeddings = [], [], [], []
-        max_id = self._get_max_qna_id()
+        with self._kb_lock:
+            ids, documents, metadatas, embeddings = [], [], [], []
+            max_id = self._get_max_qna_id()
 
-        for i, qa_pair in enumerate(qa_list):
-            new_id = f"qna-{max_id + i + 1}"
-            text_to_embed = f"سوال: {qa_pair['question']}\n\nپاسخ: {qa_pair['answer']}"
+            for i, qa_pair in enumerate(qa_list):
+                new_id = f"qna-{max_id + i + 1}"
+                text_to_embed = f"سوال: {qa_pair['question']}\n\nپاسخ: {qa_pair['answer']}"
 
-            ids.append(new_id)
-            documents.append(text_to_embed)
-            embeddings.append(self._embedder.encode(text_to_embed).tolist())
-            metadatas.append({"question": qa_pair['question'], "answer": qa_pair['answer']})
+                ids.append(new_id)
+                documents.append(text_to_embed)
+                embeddings.append(self._embed(text_to_embed))
+                metadatas.append({"question": qa_pair['question'], "answer": qa_pair['answer']})
 
-        self._collection.add(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
+            self._collection.add(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
         return {"status": "success", "message": f"{len(ids)} آیتم جدید اضافه شد."}
+
+    def _reset_collection(self) -> int:
+        """کالکشن را کامل پاک و دوباره (با فاصله کسینوسی) می‌سازد. تعداد آیتم‌های حذف‌شده را برمی‌گرداند."""
+        count = self._collection.count()
+        self._chroma_client.delete_collection(name=self.COLLECTION_NAME)
+        self._collection = self._get_or_create_collection()
+        return count
 
     def overwrite_database(self, qa_list: list) -> dict:
         """کل پایگاه دانش را با لیست جدیدی از پرسش و پاسخ‌ها جایگزین می‌کند."""
-        self._knowledge_base = []  # پاک کردن کامل
-        new_items = [self._create_new_entry(qa) for qa in qa_list]
-        self._knowledge_base.extend(new_items)
-        self._save_knowledge_base()
-        self._reload_knowledge_base()
-        return {"status": "success", "message": f"پایگاه دانش بازنویسی شد. تعداد آیتم‌های جدید: {len(new_items)}"}
+        with self._kb_lock:
+            self._reset_collection()
+            self.add_entries(qa_list)
+        return {"status": "success", "message": f"پایگاه دانش بازنویسی شد. تعداد آیتم‌های جدید: {len(qa_list)}"}
 
     def delete_entries(self, ids_to_delete: list = None) -> dict:
         """آیتم‌ها را از ChromaDB حذف می‌کند."""
-        if ids_to_delete is None:
-            count = self._collection.count()
-            self._chroma_client.delete_collection(name=self.COLLECTION_NAME)
-            self._collection = self._chroma_client.get_or_create_collection(name=self.COLLECTION_NAME)
-            return {"status": "success", "message": f"کل پایگاه دانش ({count} آیتم) پاک شد."}
+        with self._kb_lock:
+            if ids_to_delete is None:
+                count = self._reset_collection()
+                return {"status": "success", "message": f"کل پایگاه دانش ({count} آیتم) پاک شد."}
 
-        self._collection.delete(ids=ids_to_delete)
+            self._collection.delete(ids=ids_to_delete)
         return {"status": "success", "message": f"{len(ids_to_delete)} آیتم حذف شدند."}
 
     def get_all_entries(self) -> list:
         """تمام آیتم‌ها را از ChromaDB بازیابی می‌کند."""
         results = self._collection.get(include=["metadatas"])
-        if not results or not results['ids']: return []
+        if not results or not results['ids']:
+            return []
 
         return [{"id": item_id, "question": meta.get("question"), "answer": meta.get("answer")}
                 for item_id, meta in zip(results['ids'], results['metadatas'])]
@@ -396,19 +328,18 @@ class QAModel:
     def _get_max_qna_id(self) -> int:
         """بزرگترین ID عددی را برای ساخت ID جدید پیدا می‌کند."""
         all_ids = self._collection.get(include=[])['ids']
-        if not all_ids: return 0
         max_num = 0
         for item_id in all_ids:
             if item_id.startswith('qna-'):
                 try:
                     num = int(item_id.split('-')[1])
-                    if num > max_num: max_num = num
+                    if num > max_num:
+                        max_num = num
                 except (ValueError, IndexError):
                     continue
         return max_num
 
 
-# --- این بخش بدون تغییر باقی می‌ماند ---
 model_instance = QAModel()
 
 
