@@ -23,7 +23,6 @@ class PendingTicket(BaseModel):
     question_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     question: str
     timestamp: datetime = Field(default_factory=datetime.now)
-    # --- فیلدهای جدید ---
     bot_answer: Optional[str] = None
     ticket_source: Literal["unanswered", "negative_feedback"] = "unanswered"
 
@@ -54,8 +53,8 @@ class QAList(BaseModel):
     data: List[SingleQA]
 
 class DeleteRequest(BaseModel):
-    """مدلی برای درخواست حذف آیتم‌ها بر اساس ID."""
-    ids: List[str]
+    """مدلی برای درخواست حذف آیتم‌ها بر اساس ID. اگر ids ارسال نشود، کل پایگاه دانش پاک می‌شود."""
+    ids: Optional[List[str]] = None
 
 class OperatorAnswerPayload(BaseModel):
     """
@@ -69,12 +68,6 @@ class TicketCreationResponse(BaseModel):
     status: Literal["ticket_created"] = "ticket_created"
     message: str
     question_id: str
-
-class PendingTicket(BaseModel):
-    """مدل یک تیکت در حال انتظار در فایل JSON."""
-    question_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    question: str
-    timestamp: datetime = Field(default_factory=datetime.now)
 
 class PendingTicketList(BaseModel):
     data: List[PendingTicket]

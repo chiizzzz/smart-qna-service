@@ -28,3 +28,7 @@ input.xlsx
 
 
 local/
+
+# runtime data
+chroma_db_store/
+pending_tickets.json

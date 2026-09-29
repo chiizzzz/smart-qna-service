@@ -2,7 +2,7 @@
 import json
 import threading
 from app.schemas import PendingTicket
-from typing import List, Optional, Dict, Literal
+from typing import Optional, Dict, Literal
 file_lock = threading.Lock()
 PENDING_TICKETS_DB = "pending_tickets.json"
 
@@ -27,6 +27,18 @@ def _write_db(tickets_dict: Dict[str, Dict]):
         json.dump({"data": tickets_list}, f, ensure_ascii=False, indent=2, default=str)
 
 
+def list_tickets() -> list:
+    """تمام تیکت‌های در انتظار را برمی‌گرداند."""
+    with file_lock:
+        return list(_read_db().values())
+
+
+def get_ticket(question_id: str) -> Optional[Dict]:
+    """یک تیکت را با ID آن برمی‌گرداند، یا None اگر وجود نداشته باشد."""
+    with file_lock:
+        return _read_db().get(question_id)
+
+
 def create_ticket(
     question: str,
     bot_answer: Optional[str] = None,
@@ -43,19 +55,20 @@ def create_ticket(
 
     with file_lock:
         db = _read_db()
-        db[new_ticket.question_id] = new_ticket.dict()
+        db[new_ticket.question_id] = new_ticket.model_dump(mode="json")
         _write_db(db)
 
     print(f"INFO: تیکت با ID {new_ticket.question_id} با موفقیت ایجاد شد.")
     return new_ticket
 
 
-
-def close_ticket(question_id: str):
+def close_ticket(question_id: str) -> bool:
     """یک تیکت را پس از پاسخ‌دهی از پایگاه داده حذف می‌کند."""
     with file_lock:
         db = _read_db()
-        if question_id in db:
-            del db[question_id]
-            _write_db(db)
-            print(f"INFO: تیکت {question_id} بسته و از لیست انتظار حذف شد.")
+        if question_id not in db:
+            return False
+        del db[question_id]
+        _write_db(db)
+    print(f"INFO: تیکت {question_id} بسته و از لیست انتظار حذف شد.")
+    return True
